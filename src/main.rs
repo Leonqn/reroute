@@ -32,6 +32,7 @@ mod config;
 mod conntrack;
 mod dns;
 mod domains_filter;
+mod enrichment;
 mod files_stream;
 mod last_item;
 mod reroute;
@@ -125,12 +126,14 @@ async fn main() -> Result<()> {
         router_for_polling,
         conntrack_poll_interval,
     ) {
+        let enricher = enrichment::Enricher::new(config.udp_dns_upstream).await?;
         conntrack::spawn_polling(
             router_client,
             rerouter,
             whitelist_ips_for_polling,
             poll_interval,
             auto_route_min_orig_packets,
+            enricher,
         );
     }
 

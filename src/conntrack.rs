@@ -7,10 +7,12 @@ use std::{
 
 use anyhow::Result;
 use arc_swap::ArcSwapOption;
+use futures_util::future::join_all;
 use ipnet::Ipv4Net;
 use log::error;
 
 use crate::{
+    enrichment::{EnrichInfo, Enricher},
     reroute::Rerouter,
     routers::{ConntrackEntry, KeeneticClient},
 };
@@ -21,8 +23,10 @@ pub fn spawn_polling(
     whitelist_ips: Arc<ArcSwapOption<Vec<Ipv4Net>>>,
     poll_interval: Duration,
     auto_route_min_orig_packets: Option<u64>,
+    enricher: Enricher,
 ) {
     tokio::spawn(async move {
+        let mut cache: HashMap<Ipv4Addr, EnrichInfo> = HashMap::new();
         loop {
             tokio::time::sleep(poll_interval).await;
             if let Err(e) = poll(
@@ -30,6 +34,8 @@ pub fn spawn_polling(
                 &rerouter,
                 &whitelist_ips,
                 auto_route_min_orig_packets,
+                &enricher,
+                &mut cache,
             )
             .await
             {
@@ -44,21 +50,24 @@ async fn poll(
     rerouter: &Rerouter,
     whitelist_ips: &ArcSwapOption<Vec<Ipv4Net>>,
     auto_route_min_orig_packets: Option<u64>,
+    enricher: &Enricher,
+    cache: &mut HashMap<Ipv4Addr, EnrichInfo>,
 ) -> Result<()> {
     let entries = router_client.get_connections().await?;
     let whitelist = whitelist_ips.load();
     let nets: &[Ipv4Net] = whitelist.as_deref().map(|v| v.as_slice()).unwrap_or(&[]);
 
     if !nets.is_empty() {
-        let matched_ips: HashSet<Ipv4Addr> = entries
+        let matched_ips: Vec<Ipv4Addr> = entries
             .iter()
             .map(|e| e.orig.dst)
             .filter(|ip| nets.iter().any(|net| net.contains(ip)))
+            .collect::<HashSet<_>>()
+            .into_iter()
             .collect();
 
         if !matched_ips.is_empty() {
-            let ips: Vec<Ipv4Addr> = matched_ips.into_iter().collect();
-            rerouter.reroute(ips, "conntrack").await?;
+            reroute_with_enrichment(rerouter, enricher, cache, matched_ips, "conntrack").await;
         }
     }
 
@@ -70,11 +79,42 @@ async fn poll(
             .unwrap_or_default();
         let to_route = auto_route_candidates(&entries, &routed_set, nets, min_orig);
         if !to_route.is_empty() {
-            rerouter.reroute(to_route, "auto").await?;
+            reroute_with_enrichment(rerouter, enricher, cache, to_route, "auto").await;
         }
     }
 
     Ok(())
+}
+
+async fn reroute_with_enrichment(
+    rerouter: &Rerouter,
+    enricher: &Enricher,
+    cache: &mut HashMap<Ipv4Addr, EnrichInfo>,
+    ips: Vec<Ipv4Addr>,
+    prefix: &str,
+) {
+    let to_lookup: Vec<Ipv4Addr> = ips
+        .iter()
+        .filter(|ip| !cache.contains_key(ip))
+        .copied()
+        .collect();
+    let lookups = to_lookup
+        .into_iter()
+        .map(|ip| async move { (ip, enricher.lookup(ip).await) });
+    let results = join_all(lookups).await;
+    for (ip, info) in results {
+        if !info.is_empty() {
+            cache.insert(ip, info);
+        }
+    }
+
+    for ip in ips {
+        let info = cache.get(&ip).cloned().unwrap_or_default();
+        let comment = info.format_comment(prefix);
+        if let Err(e) = rerouter.reroute(vec![ip], &comment).await {
+            error!("Reroute failed for {ip}: {e:#}");
+        }
+    }
 }
 
 fn auto_route_candidates(

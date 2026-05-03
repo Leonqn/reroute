@@ -29,6 +29,11 @@ impl Query {
 
     /// Build a minimal DNS A-record query for the given domain.
     pub fn for_domain(domain: &str) -> Self {
+        Self::for_domain_with_type(domain, 1)
+    }
+
+    /// Build a minimal DNS query for the given domain and QTYPE.
+    pub fn for_domain_with_type(domain: &str, qtype: u16) -> Self {
         let mut buf = Vec::with_capacity(32 + domain.len());
         // Header: ID=0x0001, flags=0x0100 (standard query, recursion desired), QDCOUNT=1
         buf.extend_from_slice(&[
@@ -40,7 +45,7 @@ impl Query {
             buf.extend_from_slice(label.as_bytes());
         }
         buf.push(0); // root label
-        buf.extend_from_slice(&[0x00, 0x01]); // QTYPE = A
+        buf.extend_from_slice(&qtype.to_be_bytes()); // QTYPE
         buf.extend_from_slice(&[0x00, 0x01]); // QCLASS = IN
         Self {
             request: Bytes::from(buf),
