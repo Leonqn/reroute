@@ -62,6 +62,10 @@ async fn main() -> Result<()> {
         Arc::new(StatsCollector::new(data_dir.join("stats"), router_for_stats).await);
 
     let conntrack_poll_interval = config.reroute.as_ref().map(|r| r.conntrack_poll_interval);
+    let auto_route_min_orig_packets = config
+        .reroute
+        .as_ref()
+        .and_then(|r| r.auto_route_min_orig_packets);
     let hosts_entries: Arc<ArcSwapOption<HashMap<String, Ipv4Addr>>> = if config.hosts.is_empty() {
         Arc::new(ArcSwapOption::empty())
     } else {
@@ -126,6 +130,7 @@ async fn main() -> Result<()> {
             rerouter,
             whitelist_ips_for_polling,
             poll_interval,
+            auto_route_min_orig_packets,
         );
     }
 
@@ -494,6 +499,7 @@ mod tests {
                 route_ttl: Some(Duration::from_secs(10)),
                 manual_whitelist_dns: Some(Vec::new()),
                 conntrack_poll_interval: Duration::from_secs(10),
+                auto_route_min_orig_packets: None,
             }),
             retry_config: Some(Retry {
                 attempts_count: 3,

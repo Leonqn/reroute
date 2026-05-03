@@ -81,6 +81,7 @@ pub struct Reroute {
     #[serde(default = "default_conntrack_poll_interval")]
     #[serde(with = "humantime_serde")]
     pub conntrack_poll_interval: Duration,
+    pub auto_route_min_orig_packets: Option<u64>,
 }
 
 fn default_conntrack_poll_interval() -> Duration {

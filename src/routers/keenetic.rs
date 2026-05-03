@@ -43,11 +43,16 @@ struct ConntrackEntries {
 #[derive(Deserialize)]
 pub struct ConntrackEntry {
     pub orig: ConntrackEndpoint,
+    pub repl: ConntrackEndpoint,
 }
 
 #[derive(Deserialize)]
 pub struct ConntrackEndpoint {
     pub dst: Ipv4Addr,
+    #[serde(default)]
+    pub proto: String,
+    #[serde(default)]
+    pub packets: u64,
 }
 
 type BoxBody = http_body_util::combinators::BoxBody<Bytes, hyper::Error>;
