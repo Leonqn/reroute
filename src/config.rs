@@ -83,6 +83,9 @@ pub struct Reroute {
     pub conntrack_poll_interval: Duration,
     #[serde(default = "default_auto_route_min_orig_packets")]
     pub auto_route_min_orig_packets: Option<u64>,
+    #[serde(default = "default_auto_route_unroute_cooldown")]
+    #[serde(with = "humantime_serde")]
+    pub auto_route_unroute_cooldown: Duration,
 }
 
 fn default_conntrack_poll_interval() -> Duration {
@@ -91,6 +94,10 @@ fn default_conntrack_poll_interval() -> Duration {
 
 fn default_auto_route_min_orig_packets() -> Option<u64> {
     Some(15)
+}
+
+fn default_auto_route_unroute_cooldown() -> Duration {
+    Duration::from_secs(300)
 }
 
 fn default_data_dir() -> String {

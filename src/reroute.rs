@@ -27,7 +27,7 @@ pub enum RerouteResponse {
 
 #[derive(Clone)]
 pub struct Rerouter {
-    router_requests: UnboundedSender<AddRoutesRequest>,
+    router_requests: UnboundedSender<RouterRequest>,
     routed_snapshot: Arc<ArcSwapOption<Vec<RoutedEntry>>>,
 }
 
@@ -71,11 +71,28 @@ impl Rerouter {
         }
         let (response_tx, response_rx) = oneshot::channel();
         self.router_requests
-            .send(AddRoutesRequest {
+            .send(RouterRequest::Add(AddRoutesRequest {
                 ips,
                 waiter: response_tx,
                 comment: comment.to_owned(),
-            })
+            }))
+            .expect("Receiver dropped");
+
+        response_rx.await.expect("Should receive response")
+    }
+
+    /// Remove the given IPs from the router (only those currently rerouted).
+    pub async fn unroute(&self, ips: impl IntoIterator<Item = Ipv4Addr>) -> Result<()> {
+        let ips = ips.into_iter().collect::<Vec<_>>();
+        if ips.is_empty() {
+            return Ok(());
+        }
+        let (response_tx, response_rx) = oneshot::channel();
+        self.router_requests
+            .send(RouterRequest::Remove(RemoveRoutesRequest {
+                ips,
+                waiter: response_tx,
+            }))
             .expect("Receiver dropped");
 
         response_rx.await.expect("Should receive response")
@@ -83,10 +100,22 @@ impl Rerouter {
 }
 
 #[derive(Debug)]
+enum RouterRequest {
+    Add(AddRoutesRequest),
+    Remove(RemoveRoutesRequest),
+}
+
+#[derive(Debug)]
 struct AddRoutesRequest {
     ips: HashSet<Ipv4Addr>,
     waiter: oneshot::Sender<Result<RerouteResponse>>,
     comment: String,
+}
+
+#[derive(Debug)]
+struct RemoveRoutesRequest {
+    ips: Vec<Ipv4Addr>,
+    waiter: oneshot::Sender<Result<()>>,
 }
 
 /// Convert a tokio `Instant` (last_seen) to a unix timestamp in seconds.
@@ -104,7 +133,7 @@ fn instant_to_unix_secs(last_seen: Instant) -> u64 {
 async fn router_requests_handler(
     router_client: impl RouterClient,
     route_ttl: Option<Duration>,
-    mut requests: UnboundedReceiver<AddRoutesRequest>,
+    mut requests: UnboundedReceiver<RouterRequest>,
     routed_snapshot: Arc<ArcSwapOption<Vec<RoutedEntry>>>,
 ) {
     let loaded = load_routed(&router_client).await;
@@ -119,37 +148,59 @@ async fn router_requests_handler(
     while let Some(request) = requests.recv().await {
         let now = Instant::now();
         let mut changed = false;
-        // Touch all requested IPs to refresh their TTL
-        for &ip in &request.ips {
-            if let Some(entry) = rerouted.get_mut(&ip) {
-                entry.0 = now;
-                if entry.1.is_empty() && !request.comment.is_empty() {
-                    entry.1 = request.comment.clone();
-                }
-            }
-        }
-        let blocked = request
-            .ips
-            .iter()
-            .filter(|ip| !rerouted.contains_key(ip))
-            .copied()
-            .collect::<Vec<_>>();
-        if !blocked.is_empty() {
-            let add_result = router_client.add_routes(&blocked, &request.comment).await;
-            match add_result {
-                Ok(_) => {
-                    for &ip in &request.ips {
-                        rerouted.insert(ip, (now, request.comment.clone()));
+        match request {
+            RouterRequest::Add(request) => {
+                // Touch all requested IPs to refresh their TTL
+                for &ip in &request.ips {
+                    if let Some(entry) = rerouted.get_mut(&ip) {
+                        entry.0 = now;
+                        if entry.1.is_empty() && !request.comment.is_empty() {
+                            entry.1 = request.comment.clone();
+                        }
                     }
-                    changed = true;
-                    let _ = request.waiter.send(Ok(RerouteResponse::Rerouted(blocked)));
                 }
-                Err(err) => {
-                    let _ = request.waiter.send(Err(err));
+                let blocked = request
+                    .ips
+                    .iter()
+                    .filter(|ip| !rerouted.contains_key(ip))
+                    .copied()
+                    .collect::<Vec<_>>();
+                if !blocked.is_empty() {
+                    let add_result = router_client.add_routes(&blocked, &request.comment).await;
+                    match add_result {
+                        Ok(_) => {
+                            for &ip in &request.ips {
+                                rerouted.insert(ip, (now, request.comment.clone()));
+                            }
+                            changed = true;
+                            let _ = request.waiter.send(Ok(RerouteResponse::Rerouted(blocked)));
+                        }
+                        Err(err) => {
+                            let _ = request.waiter.send(Err(err));
+                        }
+                    }
+                } else {
+                    let _ = request.waiter.send(Ok(RerouteResponse::Skipped));
                 }
             }
-        } else {
-            let _ = request.waiter.send(Ok(RerouteResponse::Skipped));
+            RouterRequest::Remove(request) => {
+                for ip in request.ips {
+                    if !rerouted.contains_key(&ip) {
+                        continue;
+                    }
+                    match router_client.remove_route(ip).await {
+                        Ok(_) => {
+                            rerouted.remove(&ip);
+                            changed = true;
+                            info!("Unrouted {} (still failing via VPN)", ip);
+                        }
+                        Err(err) => {
+                            error!("Error unrouting {}: {:?}", ip, err);
+                        }
+                    }
+                }
+                let _ = request.waiter.send(Ok(()));
+            }
         }
         // Remove up to 50 expired routes on each request
         if let Some(ttl) = route_ttl {

@@ -67,6 +67,10 @@ async fn main() -> Result<()> {
         .reroute
         .as_ref()
         .and_then(|r| r.auto_route_min_orig_packets);
+    let auto_route_unroute_cooldown = config
+        .reroute
+        .as_ref()
+        .map(|r| r.auto_route_unroute_cooldown);
     let hosts_entries: Arc<ArcSwapOption<HashMap<String, Ipv4Addr>>> = if config.hosts.is_empty() {
         Arc::new(ArcSwapOption::empty())
     } else {
@@ -133,6 +137,7 @@ async fn main() -> Result<()> {
             whitelist_ips_for_polling,
             poll_interval,
             auto_route_min_orig_packets,
+            auto_route_unroute_cooldown.unwrap_or(std::time::Duration::from_secs(300)),
             enricher,
         );
     }
@@ -503,6 +508,7 @@ mod tests {
                 manual_whitelist_dns: Some(Vec::new()),
                 conntrack_poll_interval: Duration::from_secs(10),
                 auto_route_min_orig_packets: None,
+                auto_route_unroute_cooldown: Duration::from_secs(300),
             }),
             retry_config: Some(Retry {
                 attempts_count: 3,
