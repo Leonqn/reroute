@@ -192,7 +192,7 @@ async fn router_requests_handler(
                         Ok(_) => {
                             rerouted.remove(&ip);
                             changed = true;
-                            info!("Unrouted {} (still failing via VPN)", ip);
+                            info!("Unrouted {}", ip);
                         }
                         Err(err) => {
                             error!("Error unrouting {}: {:?}", ip, err);
