@@ -22,7 +22,7 @@ pub fn spawn_polling(
     rerouter: Rerouter,
     whitelist_ips: Arc<ArcSwapOption<Vec<Ipv4Net>>>,
     poll_interval: Duration,
-    auto_route_min_orig_packets: u64,
+    auto_route_min_orig_packets: Option<u64>,
     auto_route_unroute_cooldown: Duration,
     enricher: Enricher,
 ) {
@@ -54,7 +54,7 @@ async fn poll(
     router_client: &KeeneticClient,
     rerouter: &Rerouter,
     whitelist_ips: &ArcSwapOption<Vec<Ipv4Net>>,
-    auto_route_min_orig_packets: u64,
+    auto_route_min_orig_packets: Option<u64>,
     auto_route_unroute_cooldown: Duration,
     enricher: &Enricher,
     cache: &mut HashMap<Ipv4Addr, EnrichInfo>,
@@ -78,51 +78,45 @@ async fn poll(
         }
     }
 
-    let routed_snap = rerouter.routed_snapshot().load();
-    let mut routed_set: HashSet<Ipv4Addr> = HashSet::new();
-    let mut auto_routed: HashSet<Ipv4Addr> = HashSet::new();
-    if let Some(v) = routed_snap.as_deref() {
-        for e in v {
-            routed_set.insert(e.ip);
-            if e.comment == "auto" || e.comment.starts_with("auto ") {
-                auto_routed.insert(e.ip);
-            }
-        }
-    }
-    let per_ip = aggregate_tcp(&entries);
-
-    // Drop auto-routes that still don't establish a connection via the VPN
-    // (outgoing packets but no replies), then suppress re-routing them for
-    // a cooldown so conntrack's stale failing entries don't flap them back.
-    let now = Instant::now();
-    cooldown.retain(|_, t| now.duration_since(*t) < auto_route_unroute_cooldown);
-    let to_unroute: Vec<Ipv4Addr> = per_ip
-        .iter()
-        .filter(|(ip, (o, r))| {
-            auto_routed.contains(ip) && *o >= auto_route_min_orig_packets && *r == 0
-        })
-        .map(|(ip, _)| *ip)
-        .collect();
-    if !to_unroute.is_empty() {
-        match rerouter.unroute(to_unroute.clone()).await {
-            Ok(()) => {
-                for ip in &to_unroute {
-                    cooldown.insert(*ip, now);
+    if let Some(min_orig) = auto_route_min_orig_packets {
+        let routed_snap = rerouter.routed_snapshot().load();
+        let mut routed_set: HashSet<Ipv4Addr> = HashSet::new();
+        let mut auto_routed: HashSet<Ipv4Addr> = HashSet::new();
+        if let Some(v) = routed_snap.as_deref() {
+            for e in v {
+                routed_set.insert(e.ip);
+                if e.comment == "auto" || e.comment.starts_with("auto ") {
+                    auto_routed.insert(e.ip);
                 }
             }
-            Err(e) => error!("Unroute failed: {e:#}"),
         }
-    }
+        let per_ip = aggregate_tcp(&entries);
 
-    let to_route = auto_route_candidates(
-        &per_ip,
-        &routed_set,
-        nets,
-        auto_route_min_orig_packets,
-        cooldown,
-    );
-    if !to_route.is_empty() {
-        reroute_with_enrichment(rerouter, enricher, cache, to_route, "auto").await;
+        // Drop auto-routes that still don't establish a connection via the VPN
+        // (outgoing packets but no replies), then suppress re-routing them for
+        // a cooldown so conntrack's stale failing entries don't flap them back.
+        let now = Instant::now();
+        cooldown.retain(|_, t| now.duration_since(*t) < auto_route_unroute_cooldown);
+        let to_unroute: Vec<Ipv4Addr> = per_ip
+            .iter()
+            .filter(|(ip, (o, r))| auto_routed.contains(ip) && *o >= min_orig && *r == 0)
+            .map(|(ip, _)| *ip)
+            .collect();
+        if !to_unroute.is_empty() {
+            match rerouter.unroute(to_unroute.clone()).await {
+                Ok(()) => {
+                    for ip in &to_unroute {
+                        cooldown.insert(*ip, now);
+                    }
+                }
+                Err(e) => error!("Unroute failed: {e:#}"),
+            }
+        }
+
+        let to_route = auto_route_candidates(&per_ip, &routed_set, nets, min_orig, cooldown);
+        if !to_route.is_empty() {
+            reroute_with_enrichment(rerouter, enricher, cache, to_route, "auto").await;
+        }
     }
 
     Ok(())
