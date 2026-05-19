@@ -125,10 +125,11 @@ async fn main() -> Result<()> {
         });
     }
 
-    if let (Some(rerouter), Some(router_client), Some(poll_interval)) = (
+    if let (Some(rerouter), Some(router_client), Some(poll_interval), Some(min_orig_packets)) = (
         rerouter_for_polling,
         router_for_polling,
         conntrack_poll_interval,
+        auto_route_min_orig_packets,
     ) {
         let enricher = enrichment::Enricher::new(config.udp_dns_upstream).await?;
         conntrack::spawn_polling(
@@ -136,7 +137,7 @@ async fn main() -> Result<()> {
             rerouter,
             whitelist_ips_for_polling,
             poll_interval,
-            auto_route_min_orig_packets,
+            min_orig_packets,
             auto_route_unroute_cooldown.unwrap_or(std::time::Duration::from_secs(300)),
             enricher,
         );
