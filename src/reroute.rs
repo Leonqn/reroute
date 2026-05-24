@@ -118,6 +118,12 @@ struct RemoveRoutesRequest {
     waiter: oneshot::Sender<Result<()>>,
 }
 
+pub const PERMANENT_COMMENT: &str = "permanent";
+
+fn is_permanent(comment: &str) -> bool {
+    comment == PERMANENT_COMMENT || comment.starts_with("permanent ")
+}
+
 /// Convert a tokio `Instant` (last_seen) to a unix timestamp in seconds.
 /// We anchor the conversion via `SystemTime::now()` and the elapsed time
 /// since `last_seen`, so we never need a global process-start offset.
@@ -151,10 +157,16 @@ async fn router_requests_handler(
         match request {
             RouterRequest::Add(request) => {
                 // Touch all requested IPs to refresh their TTL
+                let force_overwrite_comment = is_permanent(&request.comment);
                 for &ip in &request.ips {
                     if let Some(entry) = rerouted.get_mut(&ip) {
                         entry.0 = now;
-                        if entry.1.is_empty() && !request.comment.is_empty() {
+                        if force_overwrite_comment {
+                            if entry.1 != request.comment {
+                                entry.1 = request.comment.clone();
+                                changed = true;
+                            }
+                        } else if entry.1.is_empty() && !request.comment.is_empty() {
                             entry.1 = request.comment.clone();
                         }
                     }
@@ -206,7 +218,9 @@ async fn router_requests_handler(
         if let Some(ttl) = route_ttl {
             let expired: Vec<Ipv4Addr> = rerouted
                 .iter()
-                .filter(|(_, (last_seen, _))| now.duration_since(*last_seen) > ttl)
+                .filter(|(_, (last_seen, comment))| {
+                    !is_permanent(comment) && now.duration_since(*last_seen) > ttl
+                })
                 .map(|(ip, _)| *ip)
                 .take(50)
                 .collect();

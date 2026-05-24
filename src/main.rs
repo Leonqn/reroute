@@ -71,6 +71,11 @@ async fn main() -> Result<()> {
         .reroute
         .as_ref()
         .map(|r| r.auto_route_unroute_cooldown);
+    let permanent_routes: Vec<Ipv4Addr> = config
+        .reroute
+        .as_ref()
+        .map(|r| r.permanent_routes.clone())
+        .unwrap_or_default();
     let hosts_entries: Arc<ArcSwapOption<HashMap<String, Ipv4Addr>>> = if config.hosts.is_empty() {
         Arc::new(ArcSwapOption::empty())
     } else {
@@ -95,6 +100,14 @@ async fn main() -> Result<()> {
 
     let rerouter_for_polling = app_state.rerouter.clone();
     let whitelist_ips_for_polling = app_state.whitelist_ips.clone();
+
+    if !permanent_routes.is_empty() {
+        if let Some(rerouter) = &rerouter_for_polling {
+            rerouter
+                .reroute(permanent_routes, reroute::PERMANENT_COMMENT)
+                .await?;
+        }
+    }
 
     let app_state = Arc::new(AppState {
         routed_snapshot: app_state.routed_snapshot,
@@ -509,6 +522,7 @@ mod tests {
                 conntrack_poll_interval: Duration::from_secs(10),
                 auto_route_min_orig_packets: None,
                 auto_route_unroute_cooldown: Duration::from_secs(300),
+                permanent_routes: Vec::new(),
             }),
             retry_config: Some(Retry {
                 attempts_count: 3,

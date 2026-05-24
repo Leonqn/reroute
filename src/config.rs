@@ -76,6 +76,8 @@ pub struct Reroute {
     pub manual_whitelist: Vec<String>,
     pub manual_whitelist_dns: Option<Vec<String>>,
     #[serde(default)]
+    pub permanent_routes: Vec<Ipv4Addr>,
+    #[serde(default)]
     #[serde(with = "humantime_serde")]
     pub route_ttl: Option<Duration>,
     #[serde(default = "default_conntrack_poll_interval")]
