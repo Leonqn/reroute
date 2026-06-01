@@ -22,7 +22,7 @@ use futures_util::{stream, StreamExt};
 use last_item::LastItem;
 use log::info;
 use reroute::Rerouter;
-use routers::KeeneticClient;
+use routers::{KeeneticClient, RouterClient};
 use stats::StatsCollector;
 use url::Url;
 
@@ -76,6 +76,17 @@ async fn main() -> Result<()> {
         .as_ref()
         .map(|r| r.permanent_routes.clone())
         .unwrap_or_default();
+
+    // Install permanent routes before building the DNS client: the UDP upstream
+    // connection retries forever if its route isn't in place yet.
+    if !permanent_routes.is_empty() {
+        if let Some(router) = &router_for_polling {
+            router
+                .add_routes(&permanent_routes, reroute::PERMANENT_COMMENT)
+                .await?;
+        }
+    }
+
     let hosts_entries: Arc<ArcSwapOption<HashMap<String, Ipv4Addr>>> = if config.hosts.is_empty() {
         Arc::new(ArcSwapOption::empty())
     } else {
@@ -100,14 +111,6 @@ async fn main() -> Result<()> {
 
     let rerouter_for_polling = app_state.rerouter.clone();
     let whitelist_ips_for_polling = app_state.whitelist_ips.clone();
-
-    if !permanent_routes.is_empty() {
-        if let Some(rerouter) = &rerouter_for_polling {
-            rerouter
-                .reroute(permanent_routes, reroute::PERMANENT_COMMENT)
-                .await?;
-        }
-    }
 
     let app_state = Arc::new(AppState {
         routed_snapshot: app_state.routed_snapshot,
